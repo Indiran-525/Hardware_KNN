@@ -1,7 +1,9 @@
 module knn_d2s(
-    input rst, clk, sw,
+    input rst, clk,
+    input [7:0] in,
+    input x_pulse, y_pulse, mode_pulse,
     output reg[1:0] chosen_class,
-    output reg works
+    output reg[5:0] cycles
     );
 
     (* rom_style = "block" *)
@@ -10,9 +12,10 @@ module knn_d2s(
     initial begin
         $readmemh("rom.mem", data_points);
     end
-
+    
+    reg x_pulse_reg, y_pulse_reg, mode_pulse_reg;
     reg [7:0]odd_addr, even_addr;
-
+    reg sw;
 
     reg[17:0] distance_register_odd, distance_register_even;
     wire[7:0] x_coord_odd, y_coord_odd, x_coord_even, y_coord_even;
@@ -26,17 +29,38 @@ module knn_d2s(
     wire done_even, done_odd;
     reg valid_in_even, valid_in_odd;
 
-    wire[7:0] x_in;
-    wire[7:0] y_in;
+    //wire[7:0] x_in;
+    //wire[7:0] y_in;
 
-    assign x_in = 8'd198;
-    assign y_in = 8'd127;
+    //assign x_in = 8'd198;
+    //assign y_in = 8'd127;
+    
+    reg[7:0] x_input, y_input;
     
     reg[19:0] even_data, odd_data;
-    
+    reg x_ack, y_ack, mode_ack;
+    wire ready;
+    assign ready = (x_ack && y_ack && mode_ack);
     always@(posedge clk) begin
         even_data <= data_points[even_addr];
         odd_data <= data_points[odd_addr];
+    end
+    
+    always@(posedge clk) begin
+        x_pulse_reg <= x_pulse;
+        y_pulse_reg <= y_pulse;
+        mode_pulse_reg <= mode_pulse;
+    end
+    
+    always@(posedge clk) begin
+    if(rst) begin
+        x_ack <= 1'b0;
+        y_ack <= 1'b0;
+        mode_ack <= 1'b0;
+    end
+        if(x_pulse_reg) begin x_input <= in; x_ack <= 1'b1; end
+        if(y_pulse_reg) begin y_input <= in; y_ack <= 1'b1; end
+        if(mode_pulse_reg) begin sw <= in[0]; mode_ack <= 1'b1; end
     end
     
     assign x_coord_odd = odd_data[17:10];
@@ -46,16 +70,16 @@ module knn_d2s(
     assign y_coord_even = even_data[9:2];
     assign class_even = even_data[1:0];
     
-    distance_engine_2d DIST_ODD (.clk(clk), .rst(rst), .start(start_odd), .x_in(x_in), .y_in(y_in), 
+    distance_engine_2d DIST_ODD (.clk(clk), .rst(rst), .start(start_odd), .x_in(x_input), .y_in(y_input), 
 
                             .x_mem(x_coord_odd), .y_mem(y_coord_odd), .dist_out(distance_odd), .done(done_odd));
                             
-    distance_engine_2d DIST_EVEN (.clk(clk), .rst(rst), .start(start_even), .x_in(x_in), .y_in(y_in), 
+    distance_engine_2d DIST_EVEN (.clk(clk), .rst(rst), .start(start_even), .x_in(x_input), .y_in(y_input), 
 
                             .x_mem(x_coord_even), .y_mem(y_coord_even), .dist_out(distance_even), .done(done_even));
 
     always@(posedge clk) begin
-        if(rst) begin
+        if(rst || !ready) begin
             even_addr <= 8'b0;
             odd_addr <= 1;
             valid_in_even <= 1'b1;
@@ -89,7 +113,7 @@ module knn_d2s(
     // --- ODD SORTER INSTANCE ---
     top_k_sorter SORTER_ODD (
         .clk(clk),
-        .rst(rst),
+        .rst(rst || !ready),
         .valid_in(valid_in_odd),
         
         .new_dist(distance_odd),    
@@ -104,7 +128,7 @@ module knn_d2s(
     // --- EVEN SORTER INSTANCE ---
     top_k_sorter SORTER_EVEN (
         .clk(clk),
-        .rst(rst),
+        .rst(rst || !ready),
         .valid_in(valid_in_even),
         
         .new_dist(distance_even),   
@@ -123,7 +147,7 @@ module knn_d2s(
 
     final_merge_sort MERGE_UNIT (
         .clk(clk),
-        .rst(rst),
+        .rst(rst || !ready),
         
         // Trigger: Start only when BOTH sorters are finished
         .start(bubble_start), 
@@ -141,7 +165,7 @@ module knn_d2s(
     wire done_class;
     
     majority_voter VOTER (
-        .rst(rst), .clk(clk),
+        .rst(rst || !ready), .clk(clk),
         // Start Signal: Use the valid flag from the Merge Sorter
         .start(bubble_done), 
         
@@ -165,15 +189,15 @@ module knn_d2s(
     reg[9:0] clock_counter;
 
     always@(posedge clk) begin
-        if(rst) begin
+        if(rst || !ready) begin
             clock_counter <= 10'b0;
-            works <= 1'b0;
+            cycles <= 0;
         end
         else begin
             if(!done_class) clock_counter <= clock_counter + 1'b1;
             else begin 
             $display("class = %d, clock = %d", final_winner,clock_counter);
-            if(clock_counter == 34) works <= 1'b1;
+            if(done_class) cycles <= clock_counter;
             end
         end
     end
